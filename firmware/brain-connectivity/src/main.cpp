@@ -38,14 +38,12 @@ uint8_t crc8(const uint8_t *data, size_t len) {
 }
 
 void sendLinkMessage(JsonDocument &payload) {
-  JsonDocument envelope;
-  envelope["s"] = ++sequenceNum;
+  payload["s"] = ++sequenceNum;
   String body;
   serializeJson(payload, body);
-  envelope["c"] = crc8((uint8_t*)body.c_str(), body.length());
-  envelope["m"] = payload;
-  serializeJson(envelope, LinkSerial);
-  LinkSerial.println();
+
+  uint8_t crc = crc8((uint8_t*)body.c_str(), body.length());
+  LinkSerial.printf("%02X:%s\n", crc, body.c_str());
 }
 
 void handleLink() {
@@ -53,40 +51,41 @@ void handleLink() {
   while (LinkSerial.available()) {
     char c = LinkSerial.read();
     if (c == '\n') {
-      JsonDocument envelope;
-      DeserializationError err = deserializeJson(envelope, inputBuffer);
-      if (!err) {
-        uint32_t seq = envelope["s"];
-        uint8_t receivedCrc = envelope["c"];
-        JsonObject m = envelope["m"];
+      if (inputBuffer.length() > 3 && inputBuffer[2] == ':') {
+        String crcHex = inputBuffer.substring(0, 2);
+        String payload = inputBuffer.substring(3);
+        uint8_t receivedCrc = (uint8_t)strtol(crcHex.c_str(), NULL, 16);
+        uint8_t expectedCrc = crc8((uint8_t*)payload.c_str(), payload.length());
 
-        String body;
-        serializeJson(m, body);
-        uint8_t expectedCrc = crc8((uint8_t*)body.c_str(), body.length());
+        if (receivedCrc == expectedCrc) {
+          JsonDocument doc;
+          DeserializationError err = deserializeJson(doc, payload);
+          if (!err) {
+            uint32_t seq = doc["s"];
+            if (seq != 0 && seq == lastReceivedSeq) {
+              inputBuffer = "";
+              continue; // Duplicate
+            }
+            if (lastReceivedSeq != 0 && seq != lastReceivedSeq + 1) {
+              Serial.printf("Link gap: %u -> %u\n", lastReceivedSeq, seq);
+            }
+            lastReceivedSeq = seq;
+            lastValidLinkMessage = millis();
+            controlNodeOffline = false;
 
-        if (expectedCrc == receivedCrc) {
-          if (lastReceivedSeq != 0 && seq != lastReceivedSeq + 1) {
-            Serial.printf("Link gap detected: %u -> %u\n", lastReceivedSeq, seq);
+            String type = doc["type"];
+            if (type == "TELE") {
+              lastTelemetry = doc;
+            }
           }
-          lastReceivedSeq = seq;
-          lastValidLinkMessage = millis();
-          controlNodeOffline = false;
-
-          String type = m["type"];
-          if (type == "TELE") {
-            lastTelemetry = m;
-        } else if (type == "LOG_LINE") {
-          // Temporarily store or relay log line
-          // For P0, we'll just print to serial,
-          // but a better impl would be a proxy file.
-          Serial.println("Control Log: " + m["line"].as<String>());
-          }
+        } else {
+          Serial.printf("Link CRC failure: Recv %02X, Exp %02X\n", receivedCrc, expectedCrc);
         }
       }
       inputBuffer = "";
     } else {
       inputBuffer += c;
-      if (inputBuffer.length() > 512) inputBuffer = "";
+      if (inputBuffer.length() > 1024) inputBuffer = "";
     }
   }
 
@@ -124,14 +123,6 @@ void setup() {
     request->send_P(200, "text/html", index_html);
   });
 
-  server.on("/download_log", HTTP_GET, [](AsyncWebServerRequest *request){
-    if(!request->authenticate(WEB_USER, WEB_PASS)) return request->requestAuthentication();
-    // Trigger log request from Brain A
-    JsonDocument req;
-    req["type"] = "GET_LOG";
-    sendLinkMessage(req);
-    request->send(200, "text/plain", "Log streaming started to Brain B Serial. Check serial monitor.");
-  });
 
   server.on("/data", HTTP_GET, [](AsyncWebServerRequest *request){
     String output;
@@ -200,8 +191,16 @@ void loop() {
     if (!mqttClient.connected()) {
       static unsigned long lastMqttRetry = 0;
       if (millis() - lastMqttRetry > 5000) {
-        if (mqttClient.connect("BioConnectivity", MQTT_USER, MQTT_PASS)) {
-           mqttClient.subscribe(MQTT_TOPIC_PREFIX "/command");
+        // 11. Refuse anonymous MQTT connection if credentials are set
+        if (strlen(MQTT_USER) > 0) {
+            if (mqttClient.connect("BioConnectivity", MQTT_USER, MQTT_PASS)) {
+                mqttClient.subscribe(MQTT_TOPIC_PREFIX "/command");
+            }
+        } else {
+            // Broker might not require auth, but we still use CMD_KEY for commands
+            if (mqttClient.connect("BioConnectivity")) {
+                mqttClient.subscribe(MQTT_TOPIC_PREFIX "/command");
+            }
         }
         lastMqttRetry = millis();
       }
