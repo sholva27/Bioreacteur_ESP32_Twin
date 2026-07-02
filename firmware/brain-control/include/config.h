@@ -37,6 +37,7 @@
 #define PH_TARGET_DEFAULT 7.0
 #define PH_HYSTERESIS 0.1
 #define TEMP_TARGET_DEFAULT 37.0
+#define TEMP_HYSTERESIS 0.2
 #define STIRRER_SPEED_DEFAULT 128
 #define FEEDING_INTERVAL_MS_DEFAULT 3600000 // 1 hour
 #define FEEDING_DURATION_MS 5000     // 5 seconds
@@ -45,6 +46,8 @@
 #define SENSOR_READ_INTERVAL_MS 2000
 #define LOG_INTERVAL_MS 60000        // 1 minute
 #define FLUO_READ_INTERVAL_MS 5000   // 5 seconds
+
+#define PH_LOCKOUT_MS 10000          // 10s mixing time after dose
 
 #define LINK_TIMEOUT_MS 30000
 #define TELEMETRY_INTERVAL_MS 2000
@@ -55,6 +58,9 @@
 #define PH_MAX 10.0
 #define TEMP_MIN 20.0
 #define TEMP_MAX 45.0
+
+// Actuator Polarity
+#define RELAY_ACTIVE_LOW 0  // Set to 1 if using Active-Low relays
 
 // Debugging
 #define DEBUG_SERIAL 1

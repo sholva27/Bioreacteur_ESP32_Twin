@@ -20,6 +20,17 @@
 - **Action**: Use the dashboard or MQTT to send an out-of-bounds pH target (e.g., pH 1.0).
 - **Expected Behavior**: Brain A receives the command but refuses to update its internal setpoint because it's outside the hard-coded safe range (PH_MIN/PH_MAX).
 
+## Advanced Debugging
+
+### UART Link Monitoring
+Both brains log link events to their respective hardware Serial (USB) ports.
+- **"Link gap detected: X -> Y"**: Indicates dropped messages. Check wiring and EMI.
+- **"Link CRC error!"**: Indicates corrupted messages.
+- **"LittleFS full, deleting old log"**: Brain A automatically rotates the local log if space is low.
+
+### Watchdog Timer (WDT)
+If Brain A's `loop()` hangs for more than 5 seconds, the `esp_task_wdt` will trigger a hardware reset, putting all pumps into a safe state (defined by hardware pull-downs and the initial `emergencyStop()` in `setup()`).
+
 ## Common Issues
 - **Check CRC Errors**: If CRC errors occur frequently, check for GND connection between boards and keep UART wires short.
 - **Baud Rate Mismatch**: Ensure both brains are set to 115200.
