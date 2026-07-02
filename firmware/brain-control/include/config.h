@@ -14,30 +14,29 @@
 #define TEMP_SENSOR_PIN 14
 #define HEATER_PIN 15
 #define STIRRER_PIN 16
-#define TOUCH_BUTTON_PIN 17
-#define FLUO_LED_PIN 18
-
 #define STATUS_LED 21
 
 // UART for Inter-brain Link
 #define LINK_TX_PIN 1
 #define LINK_RX_PIN 2
 
-// ADS1115 Channels
+// ADS1115
 #define ADS_PH_CH 0
 #define ADS_OD_CH 1
 #define ADS_PRESSURE_CH 2
 #define ADS_UV_CH 3
+#define ADS_GAIN GAIN_ONE
+#define ADS_LSB 0.000125f
 
 // pH Sensor Midpoint and Slope (Nernstian)
+// Note: Slope must be calibrated at the target service temperature (e.g. 37°C)
 #define PH_VMID 2.5          // Voltage at pH 7.0
-#define PH_SLOPE_MV 59.16    // mV per pH unit at 25°C
 
 // System Constants
 #define PH_TARGET_DEFAULT 7.0
 #define PH_HYSTERESIS 0.1
 #define TEMP_TARGET_DEFAULT 37.0
-#define TEMP_HYSTERESIS 0.2
+#define TEMP_HYSTERESIS 0.5
 #define STIRRER_SPEED_DEFAULT 128
 #define FEEDING_INTERVAL_MS_DEFAULT 3600000 // 1 hour
 #define FEEDING_DURATION_MS 5000     // 5 seconds
@@ -45,9 +44,8 @@
 #define OD_CALIBRATION_FACTOR 1.0
 #define SENSOR_READ_INTERVAL_MS 2000
 #define LOG_INTERVAL_MS 60000        // 1 minute
-#define FLUO_READ_INTERVAL_MS 5000   // 5 seconds
 
-#define PH_LOCKOUT_MS 10000          // 10s mixing time after dose
+#define PH_DOSE_LOCKOUT_MS 30000     // 30s mixing time after dose
 
 #define LINK_TIMEOUT_MS 30000
 #define TELEMETRY_INTERVAL_MS 2000
@@ -61,9 +59,5 @@
 
 // Actuator Polarity
 #define RELAY_ACTIVE_LOW 0  // Set to 1 if using Active-Low relays
-
-// Debugging
-#define DEBUG_SERIAL 1
-#define VERBOSE_ADC 0
 
 #endif

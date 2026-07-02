@@ -6,3 +6,4 @@
 *.d
 *.bin
 *.elf
+secrets.h
