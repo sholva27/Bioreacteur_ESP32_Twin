@@ -1,0 +1,25 @@
+# Debugging and Failure-Mode Testing
+
+## Failure-Mode Test Plan
+
+### 1. UART Link Loss
+- **Action**: Unplug the RX/TX wires between Brain A and Brain B while the system is running.
+- **Expected Brain A Behavior**: Control loop continues (temp/pH regulation); `linkLost` flag becomes `true` in logs.
+- **Expected Brain B Behavior**: Dashboard shows "CONTROL NODE OFFLINE"; MQTT publishes offline status.
+
+### 2. Brain B Power Cycle
+- **Action**: Power cycle Brain B while Brain A is regulating.
+- **Expected Brain A Behavior**: No glitching of pumps or heater; continues regulation autonomously.
+- **Expected Brain B Behavior**: Recovers link after boot; dashboard resumes showing live data.
+
+### 3. Sensor Disconnect (Brain A)
+- **Action**: Unplug the I2C line or ADS1115 from Brain A.
+- **Expected Behavior**: Brain A enters `emergencyStop()` immediately; all actuators OFF; `err` flag sent to Brain B.
+
+### 4. Command Validation
+- **Action**: Use the dashboard or MQTT to send an out-of-bounds pH target (e.g., pH 1.0).
+- **Expected Behavior**: Brain A receives the command but refuses to update its internal setpoint because it's outside the hard-coded safe range (PH_MIN/PH_MAX).
+
+## Common Issues
+- **Check CRC Errors**: If CRC errors occur frequently, check for GND connection between boards and keep UART wires short.
+- **Baud Rate Mismatch**: Ensure both brains are set to 115200.
