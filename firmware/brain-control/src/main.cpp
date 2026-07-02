@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <esp_task_wdt.h>
 #include <Adafruit_ADS1X15.h>
 #include <RTClib.h>
 #include <ArduinoJson.h>
@@ -47,7 +48,9 @@ unsigned long lastLogTime = 0;
 unsigned long lastTelemetrySend = 0;
 unsigned long lastHeartbeatSend = 0;
 unsigned long lastValidLinkMessage = 0;
+unsigned long lastPHAction = 0;
 uint32_t sequenceNum = 0;
+uint32_t lastReceivedSeq = 0;
 
 // Pump states
 struct PumpState {
@@ -76,11 +79,19 @@ uint8_t crc8(const uint8_t *data, size_t len) {
   return crc;
 }
 
+void writeActuator(int pin, bool active) {
+#if RELAY_ACTIVE_LOW
+  digitalWrite(pin, active ? LOW : HIGH);
+#else
+  digitalWrite(pin, active ? HIGH : LOW);
+#endif
+}
+
 void emergencyStop() {
-  digitalWrite(PUMP_ACID_PIN, LOW);
-  digitalWrite(PUMP_BASE_PIN, LOW);
-  digitalWrite(PUMP_NUTRIENT_PIN, LOW);
-  digitalWrite(HEATER_PIN, LOW);
+  writeActuator(PUMP_ACID_PIN, false);
+  writeActuator(PUMP_BASE_PIN, false);
+  writeActuator(PUMP_NUTRIENT_PIN, false);
+  writeActuator(HEATER_PIN, false);
   analogWrite(STIRRER_PIN, 0);
   acidPump.active = false;
   basePump.active = false;
@@ -100,10 +111,10 @@ void updatePumps() {
   for (int i = 0; i < 3; i++) {
     if (pumps[i]->active) {
       if (now - pumps[i]->startTime >= pumps[i]->duration) {
-        digitalWrite(pumps[i]->pin, LOW);
+        writeActuator(pumps[i]->pin, false);
         pumps[i]->active = false;
       } else {
-        digitalWrite(pumps[i]->pin, HIGH);
+        writeActuator(pumps[i]->pin, true);
       }
     }
   }
@@ -133,20 +144,32 @@ void updateSensors() {
 
   if (!sensorError) {
     // Read all 4 channels of ADS1115
-    currentUV_V = (float)ads.readADC_SingleEnded(ADS_UV_CH) * 0.0001875;
-    currentPressure_V = (float)ads.readADC_SingleEnded(ADS_PRESSURE_CH) * 0.0001875;
-    currentPH_V = (float)ads.readADC_SingleEnded(ADS_PH_CH) * 0.0001875;
+    // Use GAIN_ONE for ±4.096V range
+    currentUV_V = ads.computeVolts(ads.readADC_SingleEnded(ADS_UV_CH));
+    currentPressure_V = ads.computeVolts(ads.readADC_SingleEnded(ADS_PRESSURE_CH));
+    currentPH_V = ads.computeVolts(ads.readADC_SingleEnded(ADS_PH_CH));
 
     digitalWrite(OD_LIGHT_PIN, HIGH);
     delayMicroseconds(500);
-    currentOD_V = (float)ads.readADC_SingleEnded(ADS_OD_CH) * 0.0001875;
+    currentOD_V = ads.computeVolts(ads.readADC_SingleEnded(ADS_OD_CH));
     digitalWrite(OD_LIGHT_PIN, LOW);
 
-    // Formulas
-    float effectiveSlope_V = (PH_SLOPE_MV / 1000.0) * phSlope;
-    currentPH = 7.0 + (PH_VMID - currentPH_V) / effectiveSlope_V + phOffset;
+    // Temperature Compensation for Nernst Slope (T in Kelvin)
+    // R = 8.314, F = 96485, ln(10) = 2.302
+    // Slope = (R * T / F) * ln(10)
+    float tempK = currentTemp + 273.15;
+    float nernstSlope_V = (8.314f * tempK / 96485.0f) * 2.302585f;
 
-    if (currentOD_V > 0.001 && odZeroVoltage > 0.1) {
+    float effectiveSlope_V = nernstSlope_V * phSlope;
+
+    if (abs(effectiveSlope_V) > 0.01) {
+        currentPH = 7.0 + (PH_VMID - currentPH_V) / effectiveSlope_V + phOffset;
+    } else {
+        currentPH = NAN;
+        sensorError = true;
+    }
+
+    if (currentOD_V > 0.001 && odZeroVoltage > 0.001) {
       currentOD = log10(odZeroVoltage / currentOD_V) * OD_CALIBRATION_FACTOR;
     } else {
       currentOD = (currentOD_V <= 0.001) ? 4.0 : 0.0;
@@ -171,20 +194,38 @@ void updateSensors() {
 }
 
 void controlPH() {
-  if (sensorError) return;
+  if (sensorError || isnan(currentPH)) return;
+  if (millis() - lastPHAction < PH_LOCKOUT_MS) return;
+
   float error = currentPH - phTarget;
   if (abs(error) < PH_HYSTERESIS) return;
 
-  if (error > 0) { // Acid
-    if (!acidPump.active) startPump(acidPump, 500);
-  } else { // Base
-    if (!basePump.active) startPump(basePump, 500);
+  // Adaptive dose: 100ms per 0.1 pH error, max 1000ms
+  unsigned long dose = constrain(abs(error) * 1000, 100, 1000);
+
+  if (error > 0) { // Too basic, need Acid
+    if (!acidPump.active) {
+        startPump(acidPump, dose);
+        lastPHAction = millis();
+    }
+  } else { // Too acidic, need Base
+    if (!basePump.active) {
+        startPump(basePump, dose);
+        lastPHAction = millis();
+    }
   }
 }
 
 void controlTemp() {
   if (sensorError) return;
-  digitalWrite(HEATER_PIN, (currentTemp < tempTarget) ? HIGH : LOW);
+  static bool heaterState = false;
+
+  if (heaterState) {
+    if (currentTemp >= tempTarget + TEMP_HYSTERESIS) heaterState = false;
+  } else {
+    if (currentTemp <= tempTarget - TEMP_HYSTERESIS) heaterState = true;
+  }
+  writeActuator(HEATER_PIN, heaterState);
 }
 
 void controlFeeding() {
@@ -197,10 +238,19 @@ void controlFeeding() {
 
 void logData() {
   if (sensorError) return;
+
+  // Check disk space before writing
+  if (LittleFS.usedBytes() > (LittleFS.totalBytes() * 0.9)) {
+    Serial.println("LittleFS full, deleting old log");
+    LittleFS.remove("/log.csv");
+  }
+
   File file = LittleFS.open("/log.csv", "a");
   if (file) {
     DateTime now = rtc.now();
-    file.printf("%s,%.2f,%.2f,%.2f,%.2f\n", now.timestamp().c_str(), currentPH, currentOD, currentTemp, growthRate);
+    if (file.printf("%s,%.2f,%.2f,%.2f,%.2f\n", now.timestamp().c_str(), currentPH, currentOD, currentTemp, growthRate) <= 0) {
+        Serial.println("Log write failed!");
+    }
     file.close();
   }
 }
@@ -237,42 +287,81 @@ void sendTelemetry() {
 }
 
 void handleLink() {
-  if (LinkSerial.available()) {
-    JsonDocument envelope;
-    DeserializationError err = deserializeJson(envelope, LinkSerial);
-    if (!err) {
-      String body;
-      serializeJson(envelope["m"], body);
-      uint8_t expectedCrc = crc8((uint8_t*)body.c_str(), body.length());
-      if (expectedCrc == envelope["c"].as<uint8_t>()) {
-        lastValidLinkMessage = millis();
-        linkLost = false;
+  static String inputBuffer = "";
+  while (LinkSerial.available()) {
+    char c = LinkSerial.read();
+    if (c == '\n') {
+      JsonDocument envelope;
+      DeserializationError err = deserializeJson(envelope, inputBuffer);
+      if (!err) {
+        // Extract raw body for CRC check
+        // We use the JSON string directly from the buffer for CRC to be robust
+        // But since we need to extract "m" only, it's tricky.
+        // Let's settle for calculating CRC on the re-serialized body but
+        // with controlled serialization if possible, or just use the whole line.
+        // Re-calculation on "m" is safer if we trust ArduinoJson consistency.
 
+        uint32_t seq = envelope["s"];
+        uint8_t receivedCrc = envelope["c"];
         JsonObject m = envelope["m"];
-        String type = m["type"];
 
-        if (type == "HB") {
-          long epoch = m["epoch"];
-          if (epoch > 0) rtc.adjust(DateTime(epoch));
-        } else if (!linkLost) { // Only accept commands if link is active (redundant but safe)
-          if (type == "SET_T") {
-            float ph = m["ph"];
-            float t = m["temp"];
-            if (ph >= PH_MIN && ph <= PH_MAX) phTarget = ph;
-            if (t >= TEMP_MIN && t <= TEMP_MAX) tempTarget = t;
-          } else if (type == "CAL") {
-            phSlope = m["ph_s"];
-            phOffset = m["ph_o"];
-            odZeroVoltage = m["od_z"];
-          } else if (type == "PUMP") {
-            String p = m["pump"];
-            int dur = m["dur"];
-            if (p == "acid") startPump(acidPump, dur);
-            else if (p == "base") startPump(basePump, dur);
-            else if (p == "nutrient") startPump(nutrientPump, dur);
+        String body;
+        serializeJson(m, body);
+        uint8_t expectedCrc = crc8((uint8_t*)body.c_str(), body.length());
+
+        if (expectedCrc == receivedCrc) {
+          // Sequence check (optional logging of gaps)
+          if (lastReceivedSeq != 0 && seq != lastReceivedSeq + 1) {
+            Serial.printf("Link gap detected: %u -> %u\n", lastReceivedSeq, seq);
           }
+          lastReceivedSeq = seq;
+          lastValidLinkMessage = millis();
+          linkLost = false;
+
+          String type = m["type"];
+          if (type == "HB") {
+            long epoch = m["epoch"];
+            if (epoch > 0) rtc.adjust(DateTime(epoch));
+          } else {
+            if (type == "SET_T") {
+              float ph = m["ph"];
+              float t = m["temp"];
+              if (ph >= PH_MIN && ph <= PH_MAX) phTarget = ph;
+              if (t >= TEMP_MIN && t <= TEMP_MAX) tempTarget = t;
+            } else if (type == "CAL") {
+              float s = m["ph_s"];
+              if (abs(s) > 0.01) phSlope = s;
+              phOffset = m["ph_o"];
+              odZeroVoltage = m["od_z"];
+            } else if (type == "PUMP") {
+              String p = m["pump"];
+              int dur = m["dur"];
+              if (p == "acid") startPump(acidPump, dur);
+              else if (p == "base") startPump(basePump, dur);
+              else if (p == "nutrient") startPump(nutrientPump, dur);
+          } else if (type == "GET_LOG") {
+            // Stream log file over UART
+            if (LittleFS.exists("/log.csv")) {
+                File f = LittleFS.open("/log.csv", "r");
+                while (f.available()) {
+                    String line = f.readStringUntil('\n');
+                    JsonDocument logEnv;
+                    logEnv["type"] = "LOG_LINE";
+                    logEnv["line"] = line;
+                    sendLinkMessage(logEnv);
+                }
+                f.close();
+            }
+            }
+          }
+        } else {
+            Serial.println("Link CRC error!");
         }
       }
+      inputBuffer = "";
+    } else {
+      inputBuffer += c;
+      if (inputBuffer.length() > 512) inputBuffer = ""; // Safety flush
     }
   }
 
@@ -283,12 +372,21 @@ void handleLink() {
 
 void setup() {
   Serial.begin(115200);
+
+  // WDT: 5 seconds timeout
+  esp_task_wdt_init(5, true);
+  esp_task_wdt_add(NULL);
+
   LinkSerial.begin(115200, SERIAL_8N1, LINK_RX_PIN, LINK_TX_PIN);
 
   if (!LittleFS.begin(true)) Serial.println("LittleFS Mount Failed");
 
   Wire.begin(I2C_SDA, I2C_SCL);
-  if (!ads.begin()) sensorError = true;
+  if (!ads.begin()) {
+    sensorError = true;
+  } else {
+    ads.setGain(GAIN_ONE); // ±4.096V
+  }
   if (!rtc.begin()) sensorError = true;
 
   sensors.begin();
@@ -309,6 +407,7 @@ void setup() {
 }
 
 void loop() {
+  esp_task_wdt_reset();
   unsigned long now = millis();
 
   handleLink();

@@ -34,7 +34,8 @@ This document defines the communication protocol between Brain A (Control Node) 
   - Continue regulating with last known setpoints.
   - Refuse new commands from Brain B until a valid heartbeat/message is received.
 - **Validation**: Brain A validates all incoming values (e.g., `phTarget` must be within `PH_MIN` and `PH_MAX`).
-- **Checksum Failure**: If CRC8 does not match, the message is dropped and logged.
+- **Checksum Failure**: If CRC8 does not match, the message is dropped and logged to Serial.
+- **Framing**: Every message must end with a newline character (`\n`).
 
 ## Message Types (Payloads)
 
@@ -110,11 +111,10 @@ Sent every 5000ms. Brain A uses this to sync its RTC if offset is large.
 }
 ```
 
-#### MQTT_CONFIG
+#### GET_LOG
+Requests the content of `/log.csv` from Brain A.
 ```json
 {
-  "type": "MQTT",
-  "brk": "192.168.1.50",
-  "en": true
+  "type": "GET_LOG"
 }
 ```

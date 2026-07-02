@@ -20,6 +20,7 @@ JsonDocument lastTelemetry;
 bool controlNodeOffline = true;
 unsigned long lastValidLinkMessage = 0;
 uint32_t sequenceNum = 0;
+uint32_t lastReceivedSeq = 0;
 
 // CRC8 calculation
 uint8_t crc8(const uint8_t *data, size_t len) {
@@ -48,23 +49,44 @@ void sendLinkMessage(JsonDocument &payload) {
 }
 
 void handleLink() {
-  if (LinkSerial.available()) {
-    JsonDocument envelope;
-    DeserializationError err = deserializeJson(envelope, LinkSerial);
-    if (!err) {
-      String body;
-      serializeJson(envelope["m"], body);
-      uint8_t expectedCrc = crc8((uint8_t*)body.c_str(), body.length());
-      if (expectedCrc == envelope["c"].as<uint8_t>()) {
-        lastValidLinkMessage = millis();
-        controlNodeOffline = false;
-
+  static String inputBuffer = "";
+  while (LinkSerial.available()) {
+    char c = LinkSerial.read();
+    if (c == '\n') {
+      JsonDocument envelope;
+      DeserializationError err = deserializeJson(envelope, inputBuffer);
+      if (!err) {
+        uint32_t seq = envelope["s"];
+        uint8_t receivedCrc = envelope["c"];
         JsonObject m = envelope["m"];
-        String type = m["type"];
-        if (type == "TELE") {
-          lastTelemetry = m;
+
+        String body;
+        serializeJson(m, body);
+        uint8_t expectedCrc = crc8((uint8_t*)body.c_str(), body.length());
+
+        if (expectedCrc == receivedCrc) {
+          if (lastReceivedSeq != 0 && seq != lastReceivedSeq + 1) {
+            Serial.printf("Link gap detected: %u -> %u\n", lastReceivedSeq, seq);
+          }
+          lastReceivedSeq = seq;
+          lastValidLinkMessage = millis();
+          controlNodeOffline = false;
+
+          String type = m["type"];
+          if (type == "TELE") {
+            lastTelemetry = m;
+        } else if (type == "LOG_LINE") {
+          // Temporarily store or relay log line
+          // For P0, we'll just print to serial,
+          // but a better impl would be a proxy file.
+          Serial.println("Control Log: " + m["line"].as<String>());
+          }
         }
       }
+      inputBuffer = "";
+    } else {
+      inputBuffer += c;
+      if (inputBuffer.length() > 512) inputBuffer = "";
     }
   }
 
@@ -78,6 +100,9 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   deserializeJson(doc, payload, length);
   if (doc["command"].is<String>()) {
     String cmd = doc["command"];
+    String key = doc["key"] | "";
+    if (key != MQTT_CMD_KEY) return; // Basic validation
+
     if (cmd == "feed" && !controlNodeOffline) {
       JsonDocument pumpCmd;
       pumpCmd["type"] = "PUMP";
@@ -97,6 +122,15 @@ void setup() {
 
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send_P(200, "text/html", index_html);
+  });
+
+  server.on("/download_log", HTTP_GET, [](AsyncWebServerRequest *request){
+    if(!request->authenticate(WEB_USER, WEB_PASS)) return request->requestAuthentication();
+    // Trigger log request from Brain A
+    JsonDocument req;
+    req["type"] = "GET_LOG";
+    sendLinkMessage(req);
+    request->send(200, "text/plain", "Log streaming started to Brain B Serial. Check serial monitor.");
   });
 
   server.on("/data", HTTP_GET, [](AsyncWebServerRequest *request){
@@ -156,6 +190,13 @@ void loop() {
   handleLink();
 
   if (WiFi.status() == WL_CONNECTED) {
+    // Update system time via NTP
+    static bool timeSynced = false;
+    if (!timeSynced) {
+        configTime(3600, 3600, "pool.ntp.org");
+        timeSynced = true;
+    }
+
     if (!mqttClient.connected()) {
       static unsigned long lastMqttRetry = 0;
       if (millis() - lastMqttRetry > 5000) {
@@ -172,7 +213,9 @@ void loop() {
   if (millis() - lastHeartbeat >= HEARTBEAT_INTERVAL_MS) {
     JsonDocument hb;
     hb["type"] = "HB";
-    hb["epoch"] = 0; // In a real app, get NTP time
+    time_t now;
+    time(&now);
+    hb["epoch"] = (now > 1700000000) ? now : 0;
     sendLinkMessage(hb);
     lastHeartbeat = millis();
     digitalWrite(STATUS_LED, !digitalRead(STATUS_LED));
