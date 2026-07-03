@@ -1,16 +1,21 @@
 # Hardware Optimization
 
-## Power Supply
-- Use a high-quality 12V 5A DC power supply.
-- Use separate 3.3V LDOs or Buck converters for Brain A and Brain B to prevent noise from WiFi (Brain B) affecting the ADC (Brain A).
-- Add 1000uF capacitors near the pump drivers to absorb voltage spikes.
+## 1. Independent Emergency Stop
+**Critical**: Install a physical punch-style emergency stop button wired directly to the power supply rail of the pump and heater drivers. This ensures safety even in the event of a total firmware lockup where GPIO control is lost.
 
-## Signal Integrity
-- Keep I2C lines (SDA/SCL) short. Use 4.7k pull-up resistors.
-- Shield the pH probe cable. The impedance is very high, making it susceptible to EMI from the stirrer motor.
-- Use an optoisolator for the inter-brain UART link if the boards are powered from different sources.
+## 2. Gravimetric Dosing
+Replace time-based dosing with real-time volume verification. By placing load cells under the acid, base, and nutrient reservoirs, the system can detect clogs, empty bottles, and pump wear by measuring the actual mass of liquid delivered.
 
-## Actuators
-- **Pumps**: Use peristaltic pumps with silicone tubing for chemical resistance.
-- **Drivers**: Use MOSFETs (e.g., IRLZ44N) with flyback diodes (1N4007) for all inductive loads.
-- **Heater**: Use a 12V 50W cartridge heater inside a stainless steel thermowell.
+## 3. Sensor Redundancy
+Add a second DS18B20 temperature sensor for cross-redundancy. If the deviation between sensors exceeds a threshold, the system should trigger a fault and enter a safe state, preventing overheating due to a single-sensor failure.
+
+## 4. Galvanic Isolation (Optocouplers)
+Use optocouplers for all actuator signals (Pumps, Heater) and not just the communication link. This provides total galvanic isolation between the low-voltage control logic and the higher-power actuator rails, critical for safety in liquid-handling environments.
+
+## 5. I2C Multiplexing (TCA9548A)
+Integrate an I2C multiplexer to separate the sensitive pH probe bus from future I2C sensors (DO, AS7341 spectral sensor). This prevents address conflicts and reduces cross-talk noise between devices.
+
+## 6. Power & Integrity
+- Use separate 3.3V LDOs for Brain A and Brain B.
+- Use 4.7k pull-up resistors on all I2C lines.
+- Shield the pH probe cable from motor EMI.
