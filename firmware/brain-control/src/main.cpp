@@ -223,11 +223,11 @@ void controlTemp() {
   if (sensorError) return;
   static bool heaterState = false;
 
-  // 10. Temperature Hysteresis
+  // 10. Temperature Hysteresis (P2)
   if (heaterState) {
-    if (currentTemp >= tempTarget + TEMP_HYSTERESIS) heaterState = false;
+    if (currentTemp > tempTarget + TEMP_HYSTERESIS) heaterState = false;
   } else {
-    if (currentTemp <= tempTarget - TEMP_HYSTERESIS) heaterState = true;
+    if (currentTemp < tempTarget - TEMP_HYSTERESIS) heaterState = true;
   }
   writeActuator(HEATER_PIN, heaterState);
 }
@@ -304,60 +304,60 @@ void handleLink() {
   while (LinkSerial.available()) {
     char c = LinkSerial.read();
     if (c == '\n') {
-      // 8. HH:<payloadJson>\n framing (from point 8 of instruction)
-      if (inputBuffer.length() > 3 && inputBuffer[2] == ':') {
-        String crcHex = inputBuffer.substring(0, 2);
-        String payload = inputBuffer.substring(3);
-        uint8_t receivedCrc = (uint8_t)strtol(crcHex.c_str(), NULL, 16);
-        uint8_t expectedCrc = crc8((uint8_t*)payload.c_str(), payload.length());
+      JsonDocument envelope;
+      DeserializationError err = deserializeJson(envelope, inputBuffer);
+      if (!err) {
+        // 8. Envelope fields verification (s, c, m)
+        uint32_t seq = envelope["s"];
+        uint8_t receivedCrc = envelope["c"];
+        JsonObject m = envelope["m"];
+
+        String body;
+        serializeJson(m, body);
+        uint8_t expectedCrc = crc8((uint8_t*)body.c_str(), body.length());
 
         if (receivedCrc == expectedCrc) {
-          JsonDocument doc;
-          DeserializationError err = deserializeJson(doc, payload);
-          if (!err) {
-            uint32_t seq = doc["s"];
-            // 8. Sequence verification
-            if (seq != 0 && seq == lastReceivedSeq) {
-              inputBuffer = "";
-              continue; // Duplicate
-            }
-            if (lastReceivedSeq != 0 && seq != lastReceivedSeq + 1) {
-              Serial.printf("Link gap: %u -> %u\n", lastReceivedSeq, seq);
-            }
-            lastReceivedSeq = seq;
+          // 8. Sequence check (Duplicate/Gap detection)
+          if (seq != 0 && seq == lastReceivedSeq) {
+            inputBuffer = "";
+            continue;
+          }
+          if (lastReceivedSeq != 0 && seq != lastReceivedSeq + 1) {
+            Serial.printf("Link gap: %u -> %u\n", lastReceivedSeq, seq);
+          }
+          lastReceivedSeq = seq;
 
-            lastValidLinkMessage = millis();
-            linkLost = false;
+          lastValidLinkMessage = millis();
+          linkLost = false;
 
-            String type = doc["type"];
-            if (type == "HB") {
-              long epoch = doc["epoch"];
-              if (epoch > 0) rtc.adjust(DateTime(epoch));
-            } else {
-              if (type == "SET_T") {
-                float ph = doc["ph"];
-                float t = doc["temp"];
-                if (ph >= PH_MIN && ph <= PH_MAX) phTarget = ph;
-                if (t >= TEMP_MIN && t <= TEMP_MAX) tempTarget = t;
-              } else if (type == "CAL") {
-                // 1. Validation CAL
-                float s = doc["ph_s"];
-                float o = doc["ph_o"];
-                float z = doc["od_z"];
-                if (isfinite(s) && abs(s) > 0.001f && isfinite(o) && isfinite(z) && z > 0) {
-                  phSlope = s;
-                  phOffset = o;
-                  odZeroVoltage = z;
-                } else {
-                  Serial.println("Rejected invalid CAL frame");
-                }
-              } else if (type == "PUMP") {
-                String p = doc["pump"];
-                int dur = doc["dur"];
-                if (p == "acid") startPump(acidPump, dur);
-                else if (p == "base") startPump(basePump, dur);
-                else if (p == "nutrient") startPump(nutrientPump, dur);
+          String type = m["type"];
+          if (type == "HB") {
+            long epoch = m["epoch"];
+            if (epoch > 0) rtc.adjust(DateTime(epoch));
+          } else { // 17. Use 'else' (replaces redundant 'else if')
+            if (type == "SET_T") {
+              float ph = m["ph"];
+              float t = m["temp"];
+              if (ph >= PH_MIN && ph <= PH_MAX) phTarget = ph;
+              if (t >= TEMP_MIN && t <= TEMP_MAX) tempTarget = t;
+            } else if (type == "CAL") {
+              // 1. Validation CAL
+              float s = m["ph_s"];
+              float o = m["ph_o"];
+              float z = m["od_z"];
+              if (isfinite(s) && abs(s) > 0.0001f && isfinite(o) && isfinite(z) && z > 0) {
+                phSlope = s;
+                phOffset = o;
+                odZeroVoltage = z;
+              } else {
+                Serial.println("Rejected invalid CAL frame");
               }
+            } else if (type == "PUMP") {
+              String p = m["pump"];
+              int dur = m["dur"];
+              if (p == "acid") startPump(acidPump, dur);
+              else if (p == "base") startPump(basePump, dur);
+              else if (p == "nutrient") startPump(nutrientPump, dur);
             }
           }
         } else {
@@ -378,7 +378,7 @@ void handleLink() {
 }
 
 void setup() {
-  // 4. Safe state at boot
+  // 4. Safe state at boot (P0) - MOVED TO TOP
   pinMode(PUMP_ACID_PIN, OUTPUT);
   pinMode(PUMP_BASE_PIN, OUTPUT);
   pinMode(PUMP_NUTRIENT_PIN, OUTPUT);
@@ -389,7 +389,9 @@ void setup() {
 
   // 5. Watchdog: 8 seconds timeout
   esp_task_wdt_init(8, true);
-  esp_task_wdt_add(NULL);
+  if (esp_task_wdt_add(NULL) != ESP_OK) {
+      Serial.println("WDT add warning");
+  }
 
   LinkSerial.begin(115200, SERIAL_8N1, LINK_RX_PIN, LINK_TX_PIN);
 
@@ -455,4 +457,7 @@ void loop() {
   } else {
     analogWrite(STIRRER_PIN, 0);
   }
+
+  // Ensure idle task gets time to prevent WDT trigger in normal operation
+  delay(1);
 }

@@ -38,12 +38,14 @@ uint8_t crc8(const uint8_t *data, size_t len) {
 }
 
 void sendLinkMessage(JsonDocument &payload) {
-  payload["s"] = ++sequenceNum;
+  JsonDocument envelope;
+  envelope["s"] = ++sequenceNum;
   String body;
   serializeJson(payload, body);
-
-  uint8_t crc = crc8((uint8_t*)body.c_str(), body.length());
-  LinkSerial.printf("%02X:%s\n", crc, body.c_str());
+  envelope["c"] = crc8((uint8_t*)body.c_str(), body.length());
+  envelope["m"] = payload;
+  serializeJson(envelope, LinkSerial);
+  LinkSerial.println();
 }
 
 void handleLink() {
@@ -52,34 +54,35 @@ void handleLink() {
   while (LinkSerial.available()) {
     char c = LinkSerial.read();
     if (c == '\n') {
-      if (inputBuffer.length() > 3 && inputBuffer[2] == ':') {
-        String crcHex = inputBuffer.substring(0, 2);
-        String payload = inputBuffer.substring(3);
-        uint8_t receivedCrc = (uint8_t)strtol(crcHex.c_str(), NULL, 16);
-        uint8_t expectedCrc = crc8((uint8_t*)payload.c_str(), payload.length());
+      JsonDocument envelope;
+      DeserializationError err = deserializeJson(envelope, inputBuffer);
+      if (!err) {
+        // 8. Envelope fields verification (s, c, m)
+        uint32_t seq = envelope["s"];
+        uint8_t receivedCrc = envelope["c"];
+        JsonObject m = envelope["m"];
+
+        String body;
+        serializeJson(m, body);
+        uint8_t expectedCrc = crc8((uint8_t*)body.c_str(), body.length());
 
         if (receivedCrc == expectedCrc) {
-          JsonDocument doc;
-          DeserializationError err = deserializeJson(doc, payload);
-          if (!err) {
-            uint32_t seq = doc["s"];
-            // 8. Sequence verification
-            if (seq != 0 && seq == lastReceivedSeq) {
-              inputBuffer = "";
-              continue; // Duplicate
-            }
-            if (lastReceivedSeq != 0 && seq != lastReceivedSeq + 1) {
-              Serial.printf("Link gap: %u -> %u\n", lastReceivedSeq, seq);
-            }
-            lastReceivedSeq = seq;
+          // 8. Sequence check (Duplicate/Gap detection)
+          if (seq != 0 && seq == lastReceivedSeq) {
+            inputBuffer = "";
+            continue;
+          }
+          if (lastReceivedSeq != 0 && seq != lastReceivedSeq + 1) {
+            Serial.printf("Link gap detected: %u -> %u\n", lastReceivedSeq, seq);
+          }
+          lastReceivedSeq = seq;
 
-            lastValidLinkMessage = millis();
-            controlNodeOffline = false;
+          lastValidLinkMessage = millis();
+          controlNodeOffline = false;
 
-            String type = doc["type"];
-            if (type == "TELE") {
-              lastTelemetry = doc;
-            }
+          String type = m["type"];
+          if (type == "TELE") {
+            lastTelemetry = m;
           }
         } else {
           // 9. Log CRC failure
