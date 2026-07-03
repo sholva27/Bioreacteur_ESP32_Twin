@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <esp_task_wdt.h>
+#include <Preferences.h>
 #include <Adafruit_ADS1X15.h>
 #include <RTClib.h>
 #include <ArduinoJson.h>
@@ -13,6 +14,7 @@
 // Hardware interfaces
 Adafruit_ADS1115 ads;
 RTC_DS3231 rtc;
+Preferences prefs;
 OneWire oneWire(TEMP_SENSOR_PIN);
 DallasTemperature sensors(&oneWire);
 
@@ -299,6 +301,12 @@ void sendTelemetry() {
   sendLinkMessage(doc);
 }
 
+void saveSettingsNVS() {
+    prefs.putFloat("phTarget", phTarget);
+    prefs.putFloat("tempTarget", tempTarget);
+    prefs.putLong("feedInt", feedingInterval);
+}
+
 void handleLink() {
   static String inputBuffer = "";
   // 6. Non-blocking line-buffered reading (512 bytes)
@@ -339,8 +347,10 @@ void handleLink() {
             if (type == "SET_T") {
               float ph = m["ph"];
               float t = m["temp"];
-              if (ph >= PH_MIN && ph <= PH_MAX) phTarget = ph;
-              if (t >= TEMP_MIN && t <= TEMP_MAX) tempTarget = t;
+              bool changed = false;
+              if (ph >= PH_MIN && ph <= PH_MAX && ph != phTarget) { phTarget = ph; changed = true; }
+              if (t >= TEMP_MIN && t <= TEMP_MAX && t != tempTarget) { tempTarget = t; changed = true; }
+              if (changed) saveSettingsNVS();
             } else if (type == "CAL") {
               // 1. Validation CAL
               float s = m["ph_s"];
@@ -402,6 +412,11 @@ void setup() {
   pinMode(STATUS_LED, OUTPUT);
 
   if (!LittleFS.begin(true)) Serial.println("LittleFS Mount Failed");
+
+  prefs.begin("bio-control", false);
+  phTarget = prefs.getFloat("phTarget", PH_TARGET_DEFAULT);
+  tempTarget = prefs.getFloat("tempTarget", TEMP_TARGET_DEFAULT);
+  feedingInterval = prefs.getLong("feedInt", FEEDING_INTERVAL_MS_DEFAULT);
 
   Wire.begin(I2C_SDA, I2C_SCL);
   if (!ads.begin()) {
