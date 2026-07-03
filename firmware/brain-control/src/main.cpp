@@ -155,9 +155,10 @@ void updateSensors() {
     currentOD_V = ads.computeVolts(ads.readADC_SingleEnded(ADS_OD_CH));
     digitalWrite(OD_LIGHT_PIN, LOW);
 
-    // 18. Nernst Slope.
+    // 18. Nernst Slope (P4).
     // Ideal value is 59.16 mV/pH at 25°C.
-    // Note: Slope must be calibrated at the target service temperature (e.g. 37°C)
+    // Note: Slope must be calibrated at the target service temperature (e.g. 37°C).
+    // The control loop uses 37°C as target; manual calibration at this T is mandatory.
     float effectiveSlope_V = (59.16f / 1000.0f) * phSlope;
 
     // 2. pH Safeguard
