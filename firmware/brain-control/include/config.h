@@ -25,8 +25,8 @@
 #define ADS_OD_CH 1
 #define ADS_PRESSURE_CH 2
 #define ADS_UV_CH 3
-#define ADS_GAIN GAIN_ONE
-#define ADS_LSB 0.000125f
+#define ADS_GAIN GAIN_ONE  // P3: Configurable Gain (±4.096V)
+#define ADS_LSB 0.000125f  // P3: 0.125mV/bit
 
 // pH Sensor Midpoint and Slope (Nernstian)
 // Note: Slope must be calibrated at the target service temperature (e.g. 37°C)
@@ -45,7 +45,7 @@
 #define SENSOR_READ_INTERVAL_MS 2000
 #define LOG_INTERVAL_MS 60000        // 1 minute
 
-#define PH_DOSE_LOCKOUT_MS 30000     // 30s mixing time after dose
+#define PH_DOSE_LOCKOUT_MS 30000     // 30s mixing time after dose (P0)
 
 #define LINK_TIMEOUT_MS 30000
 #define TELEMETRY_INTERVAL_MS 2000

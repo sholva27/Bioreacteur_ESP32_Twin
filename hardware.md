@@ -39,4 +39,4 @@ The system uses two ESP32-S3-WROOM-1 boards to separate safety-critical control 
 - 4x Jumper wires (or soldered wires) for the inter-brain link.
 
 ## Safe State Design
-- **Mandatory**: External 10k pulldown resistors must be added to all actuator driver inputs (Pumps, Heater) to ensure they remain OFF during microcontroller reset or boot-up.
+ - **Mandatory (P0)**: External 10k pulldown resistors must be added to all actuator driver inputs (Pumps, Heater) to ensure they remain OFF during microcontroller reset or boot-up.
