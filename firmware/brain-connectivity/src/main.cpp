@@ -48,6 +48,7 @@ void sendLinkMessage(JsonDocument &payload) {
 
 void handleLink() {
   static String inputBuffer = "";
+  // 6. Non-blocking line-buffered reading (512 bytes)
   while (LinkSerial.available()) {
     char c = LinkSerial.read();
     if (c == '\n') {
@@ -62,6 +63,7 @@ void handleLink() {
           DeserializationError err = deserializeJson(doc, payload);
           if (!err) {
             uint32_t seq = doc["s"];
+            // 8. Sequence verification
             if (seq != 0 && seq == lastReceivedSeq) {
               inputBuffer = "";
               continue; // Duplicate
@@ -70,6 +72,7 @@ void handleLink() {
               Serial.printf("Link gap: %u -> %u\n", lastReceivedSeq, seq);
             }
             lastReceivedSeq = seq;
+
             lastValidLinkMessage = millis();
             controlNodeOffline = false;
 
@@ -79,13 +82,14 @@ void handleLink() {
             }
           }
         } else {
-          Serial.printf("Link CRC failure: Recv %02X, Exp %02X\n", receivedCrc, expectedCrc);
+          // 9. Log CRC failure
+          Serial.printf("Link CRC error! Recv %02X, Exp %02X\n", receivedCrc, expectedCrc);
         }
       }
       inputBuffer = "";
     } else {
       inputBuffer += c;
-      if (inputBuffer.length() > 1024) inputBuffer = "";
+      if (inputBuffer.length() > 512) inputBuffer = ""; // Safety flush (6)
     }
   }
 

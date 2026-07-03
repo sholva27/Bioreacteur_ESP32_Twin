@@ -16,13 +16,15 @@ This document defines the communication protocol between Brain A (Control Node) 
   - Common 3.3V power rail (if powered from same source)
 
 ## Framing & Serialization
-- **Format**: `HH:<payloadJson>\n`
+- **Format**: JSON lines (one JSON object per line, terminated by `\n`).
 - **Library**: ArduinoJson v7.
-- **CRC**: `HH` is a 2-digit uppercase hex representation of the CRC8 checksum of the `<payloadJson>` string.
-- **Payload**: The JSON payload contains a monotonically increasing sequence number `s`.
+- **Envelope**: Every message is wrapped in an envelope containing a sequence number and a checksum.
   ```json
-  {"s": 123, "type": "HB", ...}
+  {"s": 123, "c": 45, "m": { ...message body... }}
   ```
+  - `s`: (int) Monotonically increasing sequence number.
+  - `c`: (int) CRC8 checksum of the message body string.
+  - `m`: (object) The actual payload.
 
 ## Logic Rules
 - **Heartbeat**: Both brains send a `HEARTBEAT` every 5000ms.
@@ -30,7 +32,7 @@ This document defines the communication protocol between Brain A (Control Node) 
 - **Brain A Behavior on Link Lost**:
   - Set `linkLost` flag to `true`.
   - Continue regulating with last known setpoints.
-  - Refuse new commands from Brain B until a valid heartbeat/message is received (ignores first frame if it was a command).
+  - Refuse new commands from Brain B until a valid heartbeat/message is received.
 - **Validation**: Brain A validates all incoming values (e.g., `phTarget` must be within `PH_MIN` and `PH_MAX`).
 - **Checksum Failure**: If CRC8 does not match, the message is dropped and logged to Serial.
 - **Framing**: Every message must end with a newline character (`\n`).

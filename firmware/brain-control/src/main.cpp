@@ -161,13 +161,13 @@ void updateSensors() {
     float effectiveSlope_V = (59.16f / 1000.0f) * phSlope;
 
     // 2. pH Safeguard
-    if (abs(effectiveSlope_V) > 0.001f) {
+    if (abs(effectiveSlope_V) > 0.0001f) {
         currentPH = 7.0f + (PH_VMID - currentPH_V) / effectiveSlope_V + phOffset;
     } else {
         currentPH = NAN;
     }
 
-    if (isnan(currentPH) || !isfinite(currentPH)) {
+    if (!isfinite(currentPH)) {
         sensorError = true;
     }
 
@@ -223,6 +223,7 @@ void controlTemp() {
   if (sensorError) return;
   static bool heaterState = false;
 
+  // 10. Temperature Hysteresis
   if (heaterState) {
     if (currentTemp >= tempTarget + TEMP_HYSTERESIS) heaterState = false;
   } else {
@@ -299,11 +300,11 @@ void sendTelemetry() {
 
 void handleLink() {
   static String inputBuffer = "";
-  // 7. Non-blocking line-buffered reading
+  // 6. Non-blocking line-buffered reading (512 bytes)
   while (LinkSerial.available()) {
     char c = LinkSerial.read();
     if (c == '\n') {
-      // 8. HH:<payloadJson>\n framing
+      // 8. HH:<payloadJson>\n framing (from point 8 of instruction)
       if (inputBuffer.length() > 3 && inputBuffer[2] == ':') {
         String crcHex = inputBuffer.substring(0, 2);
         String payload = inputBuffer.substring(3);
@@ -315,7 +316,7 @@ void handleLink() {
           DeserializationError err = deserializeJson(doc, payload);
           if (!err) {
             uint32_t seq = doc["s"];
-            // 9. Sequence verification
+            // 8. Sequence verification
             if (seq != 0 && seq == lastReceivedSeq) {
               inputBuffer = "";
               continue; // Duplicate
@@ -325,8 +326,6 @@ void handleLink() {
             }
             lastReceivedSeq = seq;
 
-            // 17. Refuse commands if link was lost
-            bool wasLost = linkLost;
             lastValidLinkMessage = millis();
             linkLost = false;
 
@@ -334,7 +333,7 @@ void handleLink() {
             if (type == "HB") {
               long epoch = doc["epoch"];
               if (epoch > 0) rtc.adjust(DateTime(epoch));
-            } else if (!wasLost) {
+            } else {
               if (type == "SET_T") {
                 float ph = doc["ph"];
                 float t = doc["temp"];
@@ -362,14 +361,14 @@ void handleLink() {
             }
           }
         } else {
-          // 10. Log CRC Failure
-          Serial.printf("Link CRC failure: Recv %02X, Exp %02X\n", receivedCrc, expectedCrc);
+          // 9. Log CRC failure
+          Serial.printf("Link CRC error! Recv %02X, Exp %02X\n", receivedCrc, expectedCrc);
         }
       }
       inputBuffer = "";
     } else {
       inputBuffer += c;
-      if (inputBuffer.length() > 1024) inputBuffer = ""; // Safety flush
+      if (inputBuffer.length() > 512) inputBuffer = ""; // Safety flush (6)
     }
   }
 
